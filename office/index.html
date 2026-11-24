@@ -26,10 +26,21 @@
         </div>
         <section id="detail" class="detail">社員をクリックすると詳しく表示します</section>
         <ul id="staff" class="staff"></ul>
+        <section class="events">
+          <h2>今日の予定</h2>
+          <ul id="plan" class="plan"></ul>
+          <div class="trigger">
+            <select id="evSelect" aria-label="起こすイベント"></select>
+            <button id="evGo">今すぐ起こす</button>
+          </div>
+          <h2>できごと</h2>
+          <ul id="log" class="log"></ul>
+        </section>
       </aside>
     </div>
     <p class="help">社員をクリック／タップで選択 ・ ⏸ で一時停止 ・ <a href="../">← ドット・ランナーへ</a></p>
   </main>
+  <script src="sprites.js"></script>
   <script src="office.js"></script>
 </body>
 </html>
