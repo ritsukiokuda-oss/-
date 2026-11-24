@@ -305,7 +305,9 @@
 
   function planEvents() {
     events = [];
-    const types = Object.keys(EVENT_DEFS).sort(() => Math.random() - 0.5).slice(0, 3);
+    const all = Object.keys(EVENT_DEFS);
+    for (let i = all.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [all[i], all[j]] = [all[j], all[i]]; }
+    const types = all.slice(0, 3);
     for (const type of types) {
       const def = EVENT_DEFS[type];
       for (let tries = 0; tries < 20; tries++) {
@@ -343,7 +345,7 @@
         break;
       }
       case 'visitor': {
-        const hosts = [STAFF[0], STAFF[3]].filter((p) => p.present);
+        const hosts = [STAFF[0], STAFF[3], STAFF[1], STAFF[2]].filter((p) => p.present);
         ev.host = hosts[0] || pick(presentStaff()) || STAFF[0];
         const hostSeat = MEETING_SEATS[ev.host.idx];
         ev.visitorSeat = MEETING_SEATS.find((s) => s.r === hostSeat.r && s.c !== hostSeat.c && s.dir !== 'down') || MEETING_SEATS[1];
@@ -355,12 +357,15 @@
         log(`🤝 お客さまが来社。${ev.host.name}さんが対応します`);
         break;
       }
-      case 'drill':
+      case 'drill': {
         ev.allOutAt = null;
+        const cr = activeEvent('courier');
+        if (cr) { cr.end = clock; endEvent(cr); }
         log('🚨 避難訓練開始！全員出入口から避難します');
         break;
+      }
       case 'blackout':
-        STAFF.forEach((p) => { if (p.present) p.surprised = 1.5; });
+        STAFF.forEach((p) => { if (p.present) p.surprised = 0.6; });
         log('💡 停電発生！真っ暗に…');
         break;
       case 'cat': {
@@ -443,7 +448,9 @@
 
   function triggerNow(type) {
     const def = EVENT_DEFS[type];
-    if (clock < 9 * 60 || clock >= LEAVE_START - def.dur) return log(`⚠️ 営業時間外なので「${def.label}」は起こせません`);
+    if (clock < 9 * 60 || clock >= LEAVE_START) return log(`⚠️ 営業時間外なので「${def.label}」は起こせません`);
+    if (clock >= LEAVE_START - def.dur) return log(`⚠️ 退勤時間までに終わらないので「${def.label}」は起こせません`);
+    if (!presentStaff().length) return log(`⚠️ まだ誰も出社していないので「${def.label}」は起こせません`);
     if (activeEvent(type)) return log(`⚠️ 「${def.label}」はもう起きています`);
     const ev = { type, start: clock, end: clock + def.dur, started: false, ended: false };
     if (def.exclusive && events.some((o) => EVENT_DEFS[o.type].exclusive && o.started && !o.ended)) {
@@ -452,7 +459,7 @@
     if (def.exclusive && MEETINGS.some(([a, b]) => ev.start < b && a < ev.end)) {
       return log(`⚠️ 会議と重なるので「${def.label}」は起こせません`);
     }
-    if ((type === 'birthday' || type === 'visitor') && ev.start < LUNCH[1] && LUNCH[0] < ev.end) {
+    if (def.exclusive && ev.start < LUNCH[1] && LUNCH[0] < ev.end) {
       return log(`⚠️ 昼休みと重なるので「${def.label}」は起こせません`);
     }
     // 同じ種類の予定や、重なる予定は取りやめる
@@ -542,7 +549,7 @@
       if (p.state === 'out' && m === 'leave') { p.state = 'gone'; return; }
       const canEnter = m !== 'drill' && m !== 'leave';
       if (p.state === 'before' && clock >= p.arriveAt && canEnter) { enterAt(p); p.mode = m; decide(p); }
-      else if (p.state === 'out' && canEnter && m !== 'lunch') { enterAt(p); p.mode = m; decide(p); }
+      else if (p.state === 'out' && canEnter && (m !== 'lunch' || !p.lunchOut)) { enterAt(p); p.mode = m; decide(p); }
       return;
     }
     const m = modeFor(p);
@@ -982,7 +989,7 @@
   function bubbleFor(p) {
     if (!p.present || p.state === 'walk') return null;
     if (p.kind === 'cat') return null;
-    if (p.kind === 'courier') return p.state === 'deliver' ? 'box' : null;
+    if (p.kind === 'courier') return p.state === 'deliver' && !(p.ev.receiver && p.ev.receiver.state === 'receive') ? 'box' : null;
     if (p.kind === 'visitor') return p.state === 'visit' && Math.floor(clock / 2) % 2 ? 'talk' : null;
     if (p.surprised > 0) return 'alarm';
     if (p.state === 'chat' || (p.state === 'work' && STAFF.some((o) => o.chatTarget === p && o.state === 'chat'))) return 'chat';
@@ -991,11 +998,7 @@
     if (p.state === 'lunch') return 'lunch';
     if (p.state === 'pet') return 'heart';
     if (p.state === 'receive') return 'box';
-    if (p.state === 'party') {
-      const bd = activeEvent('birthday');
-      if (bd && bd.honoree === p) return 'star';
-      return Math.floor(clock / 2 + p.idx) % 3 === 0 ? 'note' : null;
-    }
+    if (p.state === 'party') return null; // 誕生日会は王冠と音符の演出で表す
     if (p.state === 'host') return Math.floor(clock / 2) % 2 ? null : 'talk';
     if (p.state === 'meeting') {
       const here = STAFF.filter((o) => o.present && o.state === 'meeting');
@@ -1029,8 +1032,6 @@
     if (dark()) {
       ctx.fillStyle = 'rgba(8, 8, 24, 0.62)';
       ctx.fillRect(0, 0, W, H);
-      // 窓からの光だけ少し残す
-      for (const c of [2, 3, 6, 7]) { ctx.fillStyle = 'rgba(200, 220, 255, 0.10)'; ctx.fillRect(c * T, T, T, 40); }
     }
     const drill = activeEvent('drill');
     if (drill && Math.floor(animMs / 350) % 2) { ctx.fillStyle = 'rgba(255, 40, 40, 0.13)'; ctx.fillRect(0, 0, W, H); }
@@ -1038,6 +1039,16 @@
 
   function drawConfetti() {
     for (const c of confetti) px(c.x, c.y, 2, 1 + (Math.floor(c.life * 6) % 2), c.color);
+    // 誕生日会：テーブルの上に音符が浮かぶ
+    if (activeEvent('birthday')) {
+      for (let i = 0; i < 3; i++) {
+        const t = (animMs / 1200 + i / 3) % 1;
+        const x = 14 * T + 2 + i * 6 + Math.round(Math.sin(t * 6 + i) * 2);
+        const y = 8 * T - 4 - Math.round(t * 14);
+        const col = ['#7a4fd0', '#ff5d8f', '#2e86de'][i];
+        px(x + 2, y, 1, 4, col); px(x, y + 3, 3, 2, col); px(x + 3, y, 2, 1, col);
+      }
+    }
   }
 
   function render() {

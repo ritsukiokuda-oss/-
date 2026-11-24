@@ -63,7 +63,7 @@ const OfficeSprites = (() => {
     side: {
       stand: ['...OCSCCO...', '...OPPPPO...', '...OPPPPO...', '...OFFFFO...'],
       walkA: ['...OCCSCO...', '...OPPPPO...', '..OPPOOPPO..', '.OFFO..OFFO.'],
-      walkB: ['...OSCCCO...', '...OPPPPO...', '...OPPPPO...', '...OFFFFO...'],
+      walkB: ['...OSCCCO...', '...OPPPPO...', '...OPPPPO...', '..OFFOFFO...'],
       sit: ['...OCSCCO...', '...OPPPPPO..', '...OOOOOOO..', '............'],
     },
   };
@@ -111,6 +111,7 @@ const OfficeSprites = (() => {
     for (let y = 0; y <= h.backRows; y++) {
       const f = h.front[y] || '.'.repeat(12);
       rows.push([...f].map((ch, x) => {
+        if (ch === 'O' && 'SsEbCA'.includes(base[y][x])) return style === 'cap' && y < 5 ? 'A' : 'H'; // 正面用の内側の輪郭は後ろ姿では髪にする
         if (ch !== '.') return ch === 'h' && y > 2 ? 'H' : ch;
         return 'SsEbCA'.includes(base[y][x]) ? (style === 'cap' && y < 5 ? 'A' : 'H') : '.';
       }).join(''));
