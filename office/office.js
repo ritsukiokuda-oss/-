@@ -46,7 +46,7 @@
   const MEETING_SEATS = [
     { c: 13, r: 2, dir: 'right' }, { c: 17, r: 2, dir: 'left' },
     { c: 13, r: 3, dir: 'right' }, { c: 17, r: 3, dir: 'left' },
-    { c: 14, r: 1, dir: 'down' }, { c: 14, r: 4, dir: 'up' },
+    { c: 14, r: 1, dir: 'down' }, { c: 16, r: 1, dir: 'down' },
   ].map((s) => ({ ...s, chair: true, label: '会議室' }));
 
   for (let c = 16; c <= 18; c++) block(c, 6); // コーヒーカウンター
@@ -120,6 +120,7 @@
   let speed = 3;
   let selected = null;
   let bannerTimer = 0;
+  let allGoneAt = null; // 全員が退勤した時刻
   let animMs = 0; // アニメーション用の時計（一時停止中は止まる）
 
   function scheduleDay() {
@@ -155,6 +156,11 @@
     return free.length ? pick(free) : null;
   }
 
+  // 立ち止まっている他の人がいるマス
+  function occupiedBy(p) {
+    return new Set(STAFF.filter((o) => o !== p && o.present && o.state !== 'walk').map((o) => key(o.c, o.r)));
+  }
+
   function goTo(p, spot, state, timer, extra = {}) {
     reserve(p, spot);
     p.spot = spot;
@@ -162,9 +168,7 @@
     p.nextTimer = timer;
     p.chatTarget = extra.chatTarget || null;
     const from = { c: p.c, r: p.r };
-    // 立ち止まっている他の人のマスはなるべく避ける
-    const avoid = new Set(STAFF.filter((o) => o !== p && o.present && o.state !== 'walk').map((o) => key(o.c, o.r)));
-    let path = findPath(from, spot, avoid) || findPath(from, spot);
+    let path = findPath(from, spot, occupiedBy(p)) || findPath(from, spot);
     if (!path) {
       // 行けないときは到着扱いにせず、少し待ってから考え直す
       console.warn(`経路が見つかりません: ${p.name} (${p.c},${p.r}) → (${spot.c},${spot.r})`);
@@ -267,6 +271,13 @@
         p.path.shift();
         dist -= d;
         p.walkPx += d;
+        // 次のマスに誰かが立ち止まっていたら、よけられる経路に引き直す
+        const next = p.path[0];
+        if (next && p.path.length > 1 && occupiedBy(p).has(key(next.c, next.r))) {
+          const goal = p.path[p.path.length - 1];
+          const detour = findPath({ c: p.c, r: p.r }, goal, occupiedBy(p));
+          if (detour) p.path = detour;
+        }
       } else {
         p.x += Math.sign(dx) * dist;
         p.y += Math.sign(dy) * dist;
@@ -303,7 +314,11 @@
         }
       }
     }
-    if ((clock >= DAY_END || clock >= 17 * 60 + 50) && STAFF.every((p) => p.state === 'gone')) {
+    const allGone = clock >= 17 * 60 + 50 && STAFF.every((p) => p.state === 'gone');
+    if (allGone && allGoneAt === null) allGoneAt = clock;
+    // 全員帰ってから20分は夜のオフィスを見せてから翌日へ
+    if (allGone && (clock >= allGoneAt + 20 || clock >= DAY_END)) {
+      allGoneAt = null;
       day++;
       clock = DAY_START;
       scheduleDay();
