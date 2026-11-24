@@ -193,7 +193,7 @@
 
   // ================= 場所の予約と移動 =================
   function reserve(p, spot) {
-    if (p.reserved) reservations.delete(p.reserved);
+    if (p.reserved && reservations.get(p.reserved) === p) reservations.delete(p.reserved);
     p.reserved = null;
     if (spot && spot.shared) {
       p.reserved = key(spot.c, spot.r);
@@ -220,6 +220,7 @@
     p.nextState = state;
     p.nextTimer = timer;
     p.chatTarget = extra.chatTarget || null;
+    p.onArrive = extra.onArrive || null;
     const from = { c: p.c, r: p.r };
     const avoid = p.kind === 'cat' ? null : occupiedBy(p);
     const path = findPath(from, spot, avoid) || findPath(from, spot);
@@ -227,6 +228,8 @@
       // 行けないときは到着扱いにせず、少し待ってから考え直す
       console.warn(`経路が見つかりません: ${p.name} (${p.c},${p.r}) → (${spot.c},${spot.r})`);
       reserve(p, null);
+      p.pendingArrive = p.onArrive;
+      p.onArrive = null;
       p.path = [];
       p.state = 'wait';
       p.timer = 1;
@@ -347,8 +350,7 @@
       case 'visitor': {
         const hosts = [STAFF[0], STAFF[3], STAFF[1], STAFF[2]].filter((p) => p.present);
         ev.host = hosts[0] || pick(presentStaff()) || STAFF[0];
-        const hostSeat = MEETING_SEATS[ev.host.idx];
-        ev.visitorSeat = MEETING_SEATS.find((s) => s.r === hostSeat.r && s.c !== hostSeat.c && s.dir !== 'down') || MEETING_SEATS[1];
+        ev.visitorSeat = MEETING_SEATS[1]; // 応対役は (13,2)、お客さまは向かいの (17,2)
         const v = freshActor({ kind: 'visitor', name: NPC_LOOKS.visitor.name, role: '来客', sprites: NPC_SPRITES.visitor, ev });
         enterAt(v);
         goTo(v, ev.visitorSeat, 'visit', Infinity);
@@ -359,6 +361,7 @@
       }
       case 'drill': {
         ev.allOutAt = null;
+        ev.evacuees = presentStaff();
         const cr = activeEvent('courier');
         if (cr) { cr.end = clock; endEvent(cr); }
         log('🚨 避難訓練開始！全員出入口から避難します');
@@ -380,8 +383,7 @@
       case 'courier': {
         const c = freshActor({ kind: 'courier', name: NPC_LOOKS.courier.name, role: '宅配便', sprites: NPC_SPRITES.courier, ev });
         enterAt(c);
-        goTo(c, COURIER_SPOT, 'deliver', 6);
-        c.onArrive = () => { ev.arrived = true; chooseReceiver(ev); };
+        goTo(c, COURIER_SPOT, 'deliver', 6, { onArrive: () => { ev.arrived = true; chooseReceiver(ev); } });
         npcs.push(c);
         ev.npc = c;
         log('📦 宅配便が届きました');
@@ -391,8 +393,9 @@
   }
 
   function chooseReceiver(ev) {
-    const free = (p) => p.present && p.mode === 'normal' && ['work', 'coffee', 'print', 'chat', 'walk'].includes(p.state);
-    ev.receiver = free(STAFF[5]) ? STAFF[5] : (STAFF.filter(free)[0] || null);
+    const free = (p) => p.present && baseMode(p) === 'normal';
+    const dist = (p) => Math.abs(p.c - RECEIVE_SPOT.c) + Math.abs(p.r - RECEIVE_SPOT.r);
+    ev.receiver = free(STAFF[5]) ? STAFF[5] : (STAFF.filter(free).sort((a, b) => dist(a) - dist(b))[0] || null);
   }
 
   function endEvent(ev) {
@@ -433,17 +436,16 @@
       if (ev.started && !ev.ended) {
         if (ev.type === 'courier') {
           const r = ev.receiver;
-          if (ev.arrived && !r) chooseReceiver(ev);
-          if (r && r.state === 'receive' && !ev.received) {
+          if (ev.arrived && !ev.received && (!r || !r.present || baseMode(r) !== 'normal')) { ev.receiver = null; chooseReceiver(ev); }
+          if (ev.receiver && ev.receiver.state === 'receive' && !ev.received) {
             ev.received = true;
             ev.end = Math.min(ev.end, clock + 1.5);
           }
         }
-        if (ev.type === 'drill' && ev.allOutAt === null && STAFF.every((p) => !p.present)) ev.allOutAt = clock;
+        if (ev.type === 'drill' && ev.allOutAt === null && ev.evacuees.every((p) => !p.present)) ev.allOutAt = clock;
         if (clock >= ev.end) endEvent(ev);
       }
     }
-    if (activeEvent('birthday') && Math.random() < 0.15) spawnConfetti();
   }
 
   function triggerNow(type) {
@@ -481,6 +483,15 @@
   function inMeeting() { return MEETINGS.some(([a, b]) => clock >= a && clock < b); }
 
   function modeFor(p) {
+    const b = baseMode(p);
+    if (b !== 'normal') return b;
+    const cr = activeEvent('courier');
+    if (cr && cr.arrived && cr.receiver === p) return 'receive';
+    return 'normal';
+  }
+
+  // 宅配便の受け取り役を除いたモード
+  function baseMode(p) {
     if (clock >= p.leaveAt) return 'leave';
     if (activeEvent('drill')) return 'drill';
     if (inMeeting()) return 'meeting';
@@ -488,8 +499,6 @@
     if (clock >= LUNCH[0] && clock < p.lunchEnd) return 'lunch';
     const v = activeEvent('visitor');
     if (v && v.host === p) return 'host';
-    const cr = activeEvent('courier');
-    if (cr && cr.arrived && cr.receiver === p) return 'receive';
     return 'normal';
   }
 
@@ -500,7 +509,7 @@
       case 'drill': goTo(p, DOOR, 'out', 0); break;
       case 'meeting': goTo(p, MEETING_SEATS[p.idx], 'meeting', Infinity); break;
       case 'party': goTo(p, PARTY_SPOTS[p.idx], 'party', Infinity); break;
-      case 'host': goTo(p, MEETING_SEATS[p.idx], 'host', Infinity); break;
+      case 'host': goTo(p, MEETING_SEATS[0], 'host', Infinity); break;
       case 'receive': goTo(p, RECEIVE_SPOT, 'receive', Infinity); break;
       case 'lunch':
         if (p.lunchOut) goTo(p, DOOR, 'out', 0);
@@ -522,7 +531,7 @@
     if (cat && Math.random() < 0.4) {
       const spots = [[1, 0], [-1, 0], [0, 1], [0, -1]]
         .map(([dc, dr]) => ({ c: cat.c + dc, r: cat.r + dr, dir: dc === 1 ? 'left' : dc === -1 ? 'right' : dr === 1 ? 'up' : 'down', label: '猫のところ', shared: true }))
-        .filter((s) => walkable(s.c, s.r) && !seatTiles.has(key(s.c, s.r)) && isFree(s, p) && !occupiedBy(p).has(key(s.c, s.r)));
+        .filter((s) => s.r < 10 && walkable(s.c, s.r) && !seatTiles.has(key(s.c, s.r)) && isFree(s, p) && !occupiedBy(p).has(key(s.c, s.r)));
       if (spots.length) return goTo(p, pick(spots), 'pet', rand(3, 6));
     }
     const roll = Math.random();
@@ -562,7 +571,8 @@
     // 撫でに行った猫がいなくなったら戻る
     if (p.state === 'pet' || (p.state === 'walk' && p.nextState === 'pet')) {
       const cat = npcs.find((n) => n.kind === 'cat' && n.present);
-      if (!cat) decide(p);
+      const near = cat && cat.state === 'sit' && Math.abs(cat.c - p.spot.c) + Math.abs(cat.r - p.spot.r) <= 1;
+      if (!cat || (p.state === 'pet' && !near)) decide(p);
     }
     if (p.idea > 0) p.idea -= dt;
     if (p.surprised > 0) p.surprised -= dt;
@@ -590,6 +600,7 @@
       stepMove(n, WALK * T * dt * speedMul);
     } else {
       n.timer -= dt;
+      if (n.state === 'wait' && n.timer <= 0) goTo(n, n.spot, n.nextState, n.nextTimer, { onArrive: n.pendingArrive });
       if (n.kind === 'cat' && n.state === 'sit' && n.timer <= 0 && !n.ev.ended) catWander(n);
       if (n.kind === 'courier' && n.state === 'deliver' && n.timer <= 0 && !n.ev.ended) {
         n.ev.end = Math.min(n.ev.end, clock); // 誰も来ないので帰る
@@ -820,7 +831,7 @@
     px(x + 6, y + 9, 7, 1, '#2a2238');
     // キーボードとマウス
     box(x + 4, y + 7, 11, 3, '#e8e8f0', '#6a6a80');
-    if (owner.state === 'work' && Math.floor(animMs / 160 + i) % 2) px(x + 6 + ((animMs / 160) | 0) % 6, y + 8, 1, 1, '#9a9ab0');
+    if (working && Math.floor(animMs / 160 + i) % 2) px(x + 6 + ((animMs / 160) | 0) % 6, y + 8, 1, 1, '#9a9ab0');
     px(x + 17, y + 8, 2, 2, '#6a6a80');
     // 書類・マグカップ・小物
     box(x + 19, y + 3, 8, 8, '#ffffff', '#a0a0b4');
@@ -829,7 +840,7 @@
     const mug = owner.accent === '#f4f4f8' || owner.accent === '#fff4d0' ? owner.shirt : owner.accent;
     box(x + 27, y + 4, 4, 5, mug);
     px(x + 31, y + 5, 1, 2, '#2a2238');
-    if (owner.present && owner.state === 'work' && Math.floor(animMs / 500) % 3 === 0) px(x + 28, y + 2, 1, 1, '#ffffff');
+    if (working && Math.floor(animMs / 500) % 3 === 0) px(x + 28, y + 2, 1, 1, '#ffffff');
   }
 
   function drawFurniture() {
@@ -926,7 +937,6 @@
     const seated = p.state !== 'walk' && p.spot && p.spot.chair;
     if (p.state === 'walk') {
       const step = Math.floor(p.walkPx / 4) % 4;
-      if (p.dir === 'left' || p.dir === 'right') return ['walkA', 'stand', 'walkB', 'stand'][step];
       return ['walkA', 'stand', 'walkB', 'stand'][step];
     }
     if (seated) {
@@ -960,11 +970,12 @@
     // 誕生日の主役は王冠
     const bd = activeEvent('birthday');
     if (bd && bd.honoree === p && p.state === 'party') {
-      px(x - 3, y - 19 + party, 7, 2, '#ffd23f');
-      px(x - 3, y - 21 + party, 1, 2, '#ffd23f');
-      px(x, y - 21 + party, 1, 2, '#ffd23f');
-      px(x + 3, y - 21 + party, 1, 2, '#ffd23f');
-      px(x, y - 19 + party, 1, 1, '#d64541');
+      const cy = y - 17 + bob + party + (seated && p.dir !== 'up' ? 1 : 0);
+      px(x - 3, cy, 7, 2, '#ffd23f');
+      px(x - 3, cy - 2, 1, 2, '#ffd23f');
+      px(x, cy - 2, 1, 2, '#ffd23f');
+      px(x + 3, cy - 2, 1, 2, '#ffd23f');
+      px(x, cy, 1, 1, '#d64541');
     }
   }
 
@@ -1202,6 +1213,7 @@
       sim -= dt;
     }
     if (speed > 0) {
+      if (activeEvent('birthday') && Math.random() < real * 8) spawnConfetti();
       for (const c of confetti) { c.x += c.vx * real; c.y += c.vy * real; c.life -= real; }
       confetti = confetti.filter((c) => c.life > 0 && c.y < H);
     }

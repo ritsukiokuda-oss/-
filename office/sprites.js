@@ -77,7 +77,7 @@ const OfficeSprites = (() => {
     },
     messy: {
       front: ['..OO.OO.OO..', '.OHHOHHOHHO.', '.OHhhHHHHHO.', '.OHHHHHHHHO.', '.OHH.HH..HO.'],
-      side: ['..OO.OO.OO..', '.OHHOHHOHHO.', '.OHhhHHHHHO.', '.OHHHHHHHHO.', '.OHHHHH.H.O.', '.OHHH.......', '.OHH........'],
+      side: ['..OO.OO.OO..', '.OHHOHHOHHO.', '.OHhhHHHHHO.', '.OHHHHHHHHO.', '.OHHHHH.H.O.', '.OHHH.......', '.OHH........', '.OHO........'],
       backRows: 7,
     },
     long: {
@@ -92,7 +92,7 @@ const OfficeSprites = (() => {
     },
     cap: {
       front: ['...OOOOOO...', '..OAAAAAAO..', '.OAAAAAAAAO.', '.OAAAAAAAAO.', 'OAAAAAAAAAAO', '.OH......HO.'],
-      side: ['...OOOOOO...', '..OAAAAAAO..', '.OAAAAAAAAO.', '.OAAAAAAAAO.', '.OHAAAAAAAAA', '.OHH........', '.OHO........'],
+      side: ['...OOOOOO...', '..OAAAAAAO..', '.OAAAAAAAAO.', '.OAAAAAAAAO.', '.OHAAAAAAAAA', '.OHH........', '.OHH........', '.OHO........'],
       backRows: 7,
     },
   };
@@ -115,6 +115,14 @@ const OfficeSprites = (() => {
         if (ch !== '.') return ch === 'h' && y > 2 ? 'H' : ch;
         return 'SsEbCA'.includes(base[y][x]) ? (style === 'cap' && y < 5 ? 'A' : 'H') : '.';
       }).join(''));
+      // 4行目より下は、左右の端だけ輪郭にして間を髪で埋める（正面用の内側の線を消す）
+      if (y >= 4) {
+        const merged = [...rows[y]].map((ch, x) => (ch !== '.' ? ch : base[y][x]));
+        const l = merged.findIndex((ch) => ch !== '.');
+        const r = merged.length - 1 - [...merged].reverse().findIndex((ch) => ch !== '.');
+        const fill = style === 'cap' && y < 5 ? 'A' : 'H';
+        rows[y] = merged.map((ch, x) => (x === l || x === r ? 'O' : x > l && x < r ? fill : '.')).join('');
+      }
     }
     return rows;
   }
