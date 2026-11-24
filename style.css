@@ -1,0 +1,90 @@
+:root {
+  --bg: #14142b;
+  --panel: #23234a;
+  --text: #f4f4ff;
+  --muted: #a9a9d6;
+  --accent: #ffd23f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "DotGothic16", "Hiragino Kaku Gothic ProN", "Meiryo", system-ui, sans-serif;
+  display: flex;
+  justify-content: center;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+.app {
+  width: min(100%, 960px);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.hud {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.hud h1 { margin: 0; font-size: 1.3rem; letter-spacing: 0.08em; }
+.stats { display: flex; gap: 16px; color: var(--muted); }
+.stats b { color: var(--accent); font-variant-numeric: tabular-nums; }
+.screen {
+  position: relative;
+  border: 4px solid var(--panel);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #000;
+}
+canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 320 / 176;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(10, 10, 30, 0.6);
+  font-size: clamp(1rem, 4vw, 2rem);
+  text-align: center;
+  text-shadow: 2px 2px 0 #000;
+}
+.message small { font-size: 0.5em; color: var(--muted); }
+.hidden { display: none; }
+.pad {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.pad button {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 3px solid #3b3b78;
+  border-bottom-width: 6px;
+  border-radius: 10px;
+  min-width: 72px;
+  height: 64px;
+  font-size: 1.4rem;
+  cursor: pointer;
+  touch-action: none;
+}
+.pad button.active { transform: translateY(3px); border-bottom-width: 3px; background: #33336a; }
+.dpad { display: flex; gap: 12px; }
+.pad .jump { min-width: 110px; color: var(--accent); }
+.help { margin: 0; color: var(--muted); font-size: 0.85rem; text-align: center; }
+@media (hover: hover) and (pointer: fine) {
+  .pad { display: none; }
+}

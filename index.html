@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>ドット・ランナー</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="hud">
+      <h1>ドット・ランナー</h1>
+      <div class="stats">
+        <span>🪙 <b id="coins">0</b> / <b id="coinsTotal">0</b></span>
+        <span>⏱ <b id="time">0.0</b>s</span>
+      </div>
+    </header>
+
+    <div class="screen">
+      <canvas id="game" width="320" height="176" aria-label="ゲーム画面"></canvas>
+      <div id="message" class="message hidden"></div>
+    </div>
+
+    <div class="pad" aria-label="タッチ操作">
+      <div class="dpad">
+        <button data-key="left" aria-label="左">◀</button>
+        <button data-key="right" aria-label="右">▶</button>
+      </div>
+      <button class="jump" data-key="jump" aria-label="ジャンプ">JUMP</button>
+    </div>
+
+    <p class="help">
+      移動: ← → / A D ・ ジャンプ: Space / ↑ / W / Z（長押しで高く跳ぶ）・ リスタート: R
+    </p>
+  </main>
+  <script src="js/sprites.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
