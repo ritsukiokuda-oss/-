@@ -46,20 +46,20 @@
   const MEETING_SEATS = [
     { c: 13, r: 2, dir: 'right' }, { c: 17, r: 2, dir: 'left' },
     { c: 13, r: 3, dir: 'right' }, { c: 17, r: 3, dir: 'left' },
-    { c: 15, r: 1, dir: 'down' }, { c: 15, r: 4, dir: 'up' },
+    { c: 14, r: 1, dir: 'down' }, { c: 14, r: 4, dir: 'up' },
   ].map((s) => ({ ...s, chair: true, label: '会議室' }));
 
   for (let c = 16; c <= 18; c++) block(c, 6); // コーヒーカウンター
-  const COFFEE_SPOTS = [16, 17, 18].map((c) => ({ c, r: 7, dir: 'up', label: 'コーヒー' }));
+  const COFFEE_SPOTS = [16, 17, 18].map((c) => ({ c, r: 7, dir: 'up', label: 'コーヒー', shared: true }));
 
   block(14, 8); // 休憩テーブル
   const TABLE_SEATS = [
-    { c: 13, r: 8, dir: 'right', chair: true, label: '休憩スペース' },
-    { c: 15, r: 8, dir: 'left', chair: true, label: '休憩スペース' },
+    { c: 13, r: 8, dir: 'right', chair: true, shared: true, label: '休憩スペース' },
+    { c: 15, r: 8, dir: 'left', chair: true, shared: true, label: '休憩スペース' },
   ];
 
   block(10, 9); // コピー機
-  const PRINTER_SPOT = { c: 10, r: 8, dir: 'down', label: 'コピー機' };
+  const PRINTER_SPOT = { c: 10, r: 8, dir: 'down', label: 'コピー機', shared: true };
 
   const PLANTS = [[1, 1], [10, 1], [18, 9], [1, 9]];
   PLANTS.forEach(([c, r]) => block(c, r));
@@ -71,7 +71,7 @@
     return c >= 0 && c < COLS && r >= 0 && r < ROWS && !blocked[r][c];
   }
 
-  function findPath(from, to) {
+  function findPath(from, to, avoid = null) {
     const goal = key(to.c, to.r);
     const prev = new Map([[key(from.c, from.r), null]]);
     const queue = [from];
@@ -92,6 +92,7 @@
         const nk = key(n.c, n.r);
         if (prev.has(nk) || !walkable(n.c, n.r)) continue;
         if (seatTiles.has(nk) && nk !== goal) continue;
+        if (avoid && avoid.has(nk) && nk !== goal) continue;
         prev.set(nk, key(cur.c, cur.r));
         queue.push(n);
       }
@@ -119,6 +120,7 @@
   let speed = 3;
   let selected = null;
   let bannerTimer = 0;
+  let animMs = 0; // アニメーション用の時計（一時停止中は止まる）
 
   function scheduleDay() {
     reservations.clear();
@@ -128,7 +130,7 @@
         arriveAt: 8 * 60 + 30 + rand(0, 40),
         leaveAt: i === 0 ? 18 * 60 + 20 + rand(0, 10) : 17 * 60 + 50 + rand(0, 30),
         lunchOut: Math.random() < 0.5,
-        lunchEnd: LUNCH[1] - rand(0, 5),
+        lunchEnd: LUNCH[1],
         x: DOOR.c * T + 8, y: DOOR.r * T + 13, c: DOOR.c, r: DOOR.r,
         dir: 'up', path: [], spot: null, nextState: null, nextTimer: 0,
         timer: 0, walkPx: 0, chatTarget: null, idea: 0, reserved: null,
@@ -150,7 +152,7 @@
   }
   function freeSpot(list, p) {
     const free = list.filter((s) => isFree(s, p));
-    return free.length ? { ...pick(free), shared: true } : null;
+    return free.length ? pick(free) : null;
   }
 
   function goTo(p, spot, state, timer, extra = {}) {
@@ -159,14 +161,24 @@
     p.nextState = state;
     p.nextTimer = timer;
     p.chatTarget = extra.chatTarget || null;
-    let path = findPath({ c: p.c, r: p.r }, spot);
+    const from = { c: p.c, r: p.r };
+    // 立ち止まっている他の人のマスはなるべく避ける
+    const avoid = new Set(STAFF.filter((o) => o !== p && o.present && o.state !== 'walk').map((o) => key(o.c, o.r)));
+    let path = findPath(from, spot, avoid) || findPath(from, spot);
     if (!path) {
+      // 行けないときは到着扱いにせず、少し待ってから考え直す
       console.warn(`経路が見つかりません: ${p.name} (${p.c},${p.r}) → (${spot.c},${spot.r})`);
-      path = [];
+      reserve(p, null);
+      p.path = [];
+      p.state = 'wait';
+      p.timer = 1;
+      return;
     }
-    // 移動途中なら、まず今いるマスの中心に戻ってから進む
+    // マスの途中にいて、新しい経路が向かっていたマスへ進まないなら、今のマスの中心に戻る
+    const nextTile = p.path[0];
     const cx = p.c * T + 8, cy = p.r * T + 13;
-    if ((p.x !== cx || p.y !== cy) && !(path[0] && path[0].c === p.c && path[0].r === p.r)) {
+    const continues = nextTile && path[0] && path[0].c === nextTile.c && path[0].r === nextTile.r;
+    if ((p.x !== cx || p.y !== cy) && !continues) {
       path.unshift({ c: p.c, r: p.r });
     }
     p.path = path;
@@ -211,14 +223,15 @@
 
   // 作業の合間にすること
   function pickActivity(p) {
+    if (isChatting(p)) { p.timer = 1; return; } // 話しかけられている間は席を離れない
     const roll = Math.random();
     if (roll < 0.25) {
       const s = freeSpot(COFFEE_SPOTS, p);
       if (s) return goTo(p, s, 'coffee', rand(4, 8));
     } else if (roll < 0.45) {
-      if (isFree(PRINTER_SPOT, p)) return goTo(p, { ...PRINTER_SPOT, shared: true }, 'print', rand(2, 4));
+      if (isFree(PRINTER_SPOT, p)) return goTo(p, PRINTER_SPOT, 'print', rand(2, 4));
     } else if (roll < 0.65) {
-      const targets = STAFF.filter((o) => o !== p && o.present && o.state === 'work' && !isChatting(o));
+      const targets = STAFF.filter((o) => o !== p && o.present && o.state === 'work' && !isChatting(o) && o.leaveAt - clock > 15);
       if (targets.length) {
         const o = pick(targets);
         const s = { c: o.desk.c + 1, r: o.desk.r, dir: 'left', label: `${o.name}さんの席`, shared: true };
@@ -274,6 +287,11 @@
       }
       const m = modeFor(p);
       if (m !== p.mode) { p.mode = m; decide(p); }
+      // 雑談相手が席にいなくなったら、話すのをやめて戻る
+      if (p.state === 'chat' || (p.state === 'walk' && p.nextState === 'chat')) {
+        const t = p.chatTarget;
+        if (!t || !t.present || t.state !== 'work') decide(p);
+      }
       if (p.idea > 0) p.idea -= dt;
       if (p.state === 'walk') {
         stepMove(p, WALK * T * dt);
@@ -281,11 +299,11 @@
         p.timer -= dt;
         if (p.timer <= 0) {
           if (p.state === 'work') pickActivity(p);
-          else if (p.state === 'coffee' || p.state === 'print' || p.state === 'chat') decide(p);
+          else if (['coffee', 'print', 'chat', 'wait'].includes(p.state)) decide(p);
         }
       }
     }
-    if (clock >= DAY_END && STAFF.every((p) => !p.present)) {
+    if ((clock >= DAY_END || clock >= 17 * 60 + 50) && STAFF.every((p) => p.state === 'gone')) {
       day++;
       clock = DAY_START;
       scheduleDay();
@@ -366,9 +384,15 @@
     const meeting = MEETINGS.some(([a, b]) => clock >= a && clock < b);
     for (const [c, r] of GLASS) {
       ctx.fillStyle = 'rgba(170, 215, 255, 0.55)';
-      ctx.fillRect(c * T, r * T + 4, T, 8);
-      px(c * T, r * T + 4, T, 1, '#e8f6ff');
-      px(c * T, r * T + 11, T, 1, '#6f8fb0');
+      if (r === 5) {
+        ctx.fillRect(c * T, r * T + 4, T, 8);
+        px(c * T, r * T + 4, T, 1, '#e8f6ff');
+        px(c * T, r * T + 11, T, 1, '#6f8fb0');
+      } else {
+        ctx.fillRect(c * T + 4, r * T, 8, T);
+        px(c * T + 4, r * T, 1, T, '#e8f6ff');
+        px(c * T + 11, r * T, 1, T, '#6f8fb0');
+      }
     }
     // 会議中ランプ
     px(11 * T + 5, 1 * T + 1, 6, 4, '#2b2b38');
@@ -399,7 +423,7 @@
     px(x + 2, y - 3, 13, 9, '#2b2b38');
     px(x + 3, y - 2, 11, 7, working ? '#7ec8ff' : '#3d4660');
     if (working) {
-      const line = Math.floor(performance.now() / 300 + i) % 4;
+      const line = Math.floor(animMs / 300 + i) % 4;
       px(x + 4, y - 1 + line, 6, 1, '#e6f6ff');
       px(x + 4, y + 3, 8, 1, '#4a9be0');
     }
@@ -440,7 +464,7 @@
     px(10 * T + 1, 9 * T + 1, 14, 13, '#e0e0e8');
     px(10 * T + 1, 9 * T + 1, 14, 3, '#9a9aae');
     px(10 * T + 3, 9 * T + 6, 10, 2, '#5a5a70');
-    px(10 * T + 12, 9 * T + 10, 2, 2, printing && Math.floor(performance.now() / 200) % 2 ? '#3dff6a' : '#2a7a3a');
+    px(10 * T + 12, 9 * T + 10, 2, 2, printing && Math.floor(animMs / 200) % 2 ? '#3dff6a' : '#2a7a3a');
     // 観葉植物
     for (const [c, r] of PLANTS) {
       const x = c * T, y = r * T;
@@ -461,7 +485,7 @@
     const seated = p.state !== 'walk' && p.spot && p.spot.chair;
     const walking = p.state === 'walk';
     const step = walking ? Math.floor(p.walkPx / 4) % 2 : 0;
-    const typing = p.state === 'work' && Math.floor(performance.now() / 160 + p.idx) % 2;
+    const typing = p.state === 'work' && Math.floor(animMs / 160 + p.idx) % 2;
 
     if (seated && p.dir !== 'up') drawChair(x, y);
 
@@ -535,7 +559,10 @@
     talk: (x, y) => { px(x + 2, y + 2, 6, 1, '#2e86de'); px(x + 2, y + 4, 4, 1, '#2e86de'); },
     coffee: (x, y) => { px(x + 3, y + 2, 4, 4, '#8b4a2b'); px(x + 7, y + 3, 1, 2, '#8b4a2b'); px(x + 4, y + 1, 1, 1, '#c8c8d4'); },
     print: (x, y) => { px(x + 3, y + 1, 5, 5, '#d0d0dc'); px(x + 4, y + 2, 3, 1, '#5a5a70'); px(x + 4, y + 4, 2, 1, '#5a5a70'); },
-    lunch: (x, y) => { px(x + 4, y + 1, 2, 1, '#ffffff'); px(x + 3, y + 2, 4, 2, '#ffffff'); px(x + 2, y + 4, 6, 1, '#ffffff'); px(x + 3, y + 4, 4, 2, '#1b1b2f'); },
+    lunch: (x, y) => {
+      px(x + 4, y, 2, 1, '#8a8aa0'); px(x + 3, y + 1, 4, 1, '#8a8aa0'); px(x + 2, y + 2, 6, 3, '#8a8aa0'); px(x + 1, y + 4, 8, 3, '#8a8aa0');
+      px(x + 4, y + 1, 2, 1, '#f4f1e6'); px(x + 3, y + 2, 4, 2, '#f4f1e6'); px(x + 2, y + 4, 6, 2, '#f4f1e6'); px(x + 3, y + 5, 4, 2, '#1b1b2f');
+    },
     idea: (x, y) => { px(x + 4, y + 1, 2, 3, '#e0a800'); px(x + 4, y + 5, 2, 1, '#e0a800'); },
   };
 
@@ -577,15 +604,15 @@
   function render() {
     drawFloor();
     drawWalls();
-    drawFurniture();
     drawGlass();
+    drawFurniture();
     const people = STAFF.filter((p) => p.present).sort((a, b) => a.y - b.y);
     people.forEach(drawPerson);
     drawLighting();
     people.forEach((p) => { const b = bubbleFor(p); if (b) drawBubble(p, b); });
     if (selected && selected.present) {
-      const bob = Math.floor(performance.now() / 250) % 2;
-      const x = Math.round(selected.x), y = Math.round(selected.y) - (bubbleFor(selected) ? 34 : 22) - bob;
+      const bob = Math.floor(animMs / 250) % 2;
+      const x = Math.round(selected.x), y = Math.max(0, Math.round(selected.y) - (bubbleFor(selected) ? 34 : 22) - bob);
       px(x - 3, y, 7, 1, '#ffd23f');
       px(x - 2, y + 1, 5, 1, '#ffd23f');
       px(x - 1, y + 2, 3, 1, '#ffd23f');
@@ -605,7 +632,8 @@
     }
     switch (s) {
       case 'before': return '出勤前';
-      case 'work': return isChatting(p) ? '雑談に付き合い中' : 'デスクで作業中';
+      case 'work': return STAFF.some((o) => o.chatTarget === p && o.state === 'chat') ? '雑談に付き合い中' : 'デスクで作業中';
+      case 'wait': return '待機中';
       case 'coffee': return 'コーヒー休憩';
       case 'print': return 'コピー・印刷中';
       case 'chat': return `${p.chatTarget.name}さんと雑談中`;
@@ -621,7 +649,8 @@
     if (MEETINGS.some(([a, b]) => clock >= a && clock < b)) return '会議中';
     if (clock >= LUNCH[0] && clock < LUNCH[1]) return '昼休み';
     if (clock < 9 * 60) return '始業前';
-    if (clock >= 18 * 60) return '終業後';
+    if (clock >= 17 * 60 + 50 && STAFF.every((p) => p.state === 'gone')) return '終業後';
+    if (clock >= 17 * 60 + 50) return '退勤時間';
     return '業務中';
   }
 
@@ -682,6 +711,7 @@
   let uiTick = 0;
   function frame(now) {
     const real = Math.min(0.1, (now - last) / 1000);
+    if (speed > 0) animMs += real * 1000;
     last = now;
     let sim = real * speed; // ゲーム内の分
     while (sim > 0) {        // 高速時も細かく刻んで更新
