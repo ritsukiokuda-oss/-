@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ピクセル・オフィス</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="top">
+      <h1>ピクセル・オフィス</h1>
+      <div class="clock"><span id="day">Day 1</span> <b id="time">08:20</b> <span id="phase" class="phase">始業前</span></div>
+    </header>
+    <div class="layout">
+      <div class="screen">
+        <canvas id="office" width="320" height="176" aria-label="オフィスの様子"></canvas>
+        <div id="banner" class="banner hidden"></div>
+      </div>
+      <aside class="panel">
+        <div class="speed" role="group" aria-label="再生速度">
+          <button data-speed="0">⏸</button>
+          <button data-speed="1">1x</button>
+          <button data-speed="3" class="on">3x</button>
+          <button data-speed="10">10x</button>
+        </div>
+        <section id="detail" class="detail">社員をクリックすると詳しく表示します</section>
+        <ul id="staff" class="staff"></ul>
+      </aside>
+    </div>
+    <p class="help">社員をクリック／タップで選択 ・ ⏸ で一時停止 ・ <a href="../">← ドット・ランナーへ</a></p>
+  </main>
+  <script src="office.js"></script>
+</body>
+</html>
