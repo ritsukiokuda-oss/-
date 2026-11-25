@@ -508,7 +508,7 @@ function buildCardMessage_(card, event, status) {
   const mail = {
     [STATUS.WAITING]: `お礼メール：予定終了（${event ? fmt_(event.getEndTime(), 'HH:mm') : ''}）後に下書きを作成します`,
     [STATUS.DONE]: 'お礼メール：Gmailに下書きを作成しました',
-    [STATUS.NO_EMAIL]: 'お礼メール：メールアドレスが読み取れなかったため作成していません',
+    [STATUS.NO_EMAIL]: 'お礼メール：メールアドレスが読み取れませんでした（訪問ログの「メール」欄に入力すると下書きを作ります）',
   }[status];
   lines.push(`📝 ${mail}`);
   return lines.join('\n');
