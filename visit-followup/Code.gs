@@ -21,7 +21,7 @@ const CONFIG = {
     'FAX：06-6963-5338',
     'E-Mail：okuda@j-port.co.jp',
     'URL:株式会社ジェイ・ポート 公式サイト（http://www.j-port.co.jp）',
-    'Facebook:公式Facebookページ（http://www.facebook.com/.jport.osaka）',
+    'Facebook:公式Facebookページ（http://www.facebook.com/jport.osaka）',
     'ジェイ・ポートお役立ちブログ:お役立ちブログはこちら（http://www.j-port.co.jp/blog/）',
     '○●----------------------------------------------------------------------●○',
   ].join('\n'),
