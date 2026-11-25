@@ -34,10 +34,27 @@ VIDEO_SECONDS = int(env("VIDEO_SECONDS", "8"))
 CHECK_PASS_SCORE = int(env("CHECK_PASS_SCORE", "75"))
 MAX_RETRIES = int(env("MAX_RETRIES", "2"))
 
+# Kling 公式価格表（1ユニット=$0.14、2026-09時点）: (モデル, 音声) -> {解像度: ユニット/秒}
+KLING_UNITS = {
+    ("kling-3.0", "off"): {"720p": 0.6, "1080p": 0.8, "4k": 3.0},
+    ("kling-3.0", "native"): {"720p": 0.9, "1080p": 1.2, "4k": 3.0},
+    ("kling-3.0-turbo", "native"): {"720p": 0.8, "1080p": 1.0},
+    ("kling-2.6", "off"): {"720p": 0.3, "1080p": 0.5},
+    ("kling-2.5-turbo", "off"): {"720p": 0.3, "1080p": 0.5},
+}
+
+
+def _kling_price() -> float:
+    model = env("KLING_MODEL", "kling-3.0")
+    audio = "native" if model == "kling-3.0-turbo" else env("KLING_AUDIO", "off")
+    units = KLING_UNITS.get((model, audio), {}).get(env("KLING_RESOLUTION", "720p"), 0.6)
+    return round(units * 0.14, 4)
+
+
 # 1秒あたりの目安単価（USD）。2026年11月時点の公開情報ベース。変動するので要確認。
 PRICE_PER_SEC = {
     "mock": 0.0,
-    "kling": {"std": 0.084, "pro": 0.112}.get(env("KLING_MODE", "std"), 0.084),
+    "kling": _kling_price(),
     "veo": 0.10 if "fast" in env("VEO_MODEL", "fast") else 0.40,
     "runway": 0.12,
 }

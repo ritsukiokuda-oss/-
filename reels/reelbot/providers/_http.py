@@ -13,7 +13,7 @@ def download(url: str, out: Path) -> Path:
     return out
 
 
-def poll(fn, interval: int = 10, timeout: int = 900):
+def poll(fn, interval: int = int(__import__("os").environ.get("REELBOT_POLL", "10")), timeout: int = 900):
     """fn() が値を返すまで待つ（None なら待機続行）"""
     end = time.time() + timeout
     while time.time() < end:

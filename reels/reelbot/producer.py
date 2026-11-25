@@ -1,11 +1,15 @@
 """制作担当: ネタから動画を生成し、リール用に仕上げる"""
 from . import media, providers, store
-from .config import PRICE_PER_SEC, VIDEO_PROVIDER, VIDEO_SECONDS, VIDEOS
+from .config import env, PRICE_PER_SEC, VIDEO_PROVIDER, VIDEO_SECONDS, VIDEOS
 
 
 def billed_seconds() -> int:
-    """サービスごとに実際に課金される秒数（Kling/Runway は5秒か10秒、Veo は4〜8秒）"""
-    if VIDEO_PROVIDER in ("kling", "runway"):
+    """サービスごとに実際に課金される秒数（Kling 3.0 は3〜15秒、Runway は5秒か10秒、Veo は4〜8秒）"""
+    if VIDEO_PROVIDER == "kling":
+        if env("KLING_MODEL", "kling-3.0").startswith("kling-2"):
+            return 10 if VIDEO_SECONDS > 5 else 5
+        return min(max(VIDEO_SECONDS, 3), 15)
+    if VIDEO_PROVIDER == "runway":
         return 10 if VIDEO_SECONDS > 5 else 5
     if VIDEO_PROVIDER == "veo":
         return min(max(VIDEO_SECONDS, 4), 8)
