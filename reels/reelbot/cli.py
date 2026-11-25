@@ -6,10 +6,46 @@ from .config import MAX_RETRIES, PRICE_PER_SEC, VIDEO_PROVIDER, VIDEO_SECONDS
 
 
 def cmd_ideas(a):
+    if a.paste or a.file:
+        return _import_ideas(a)
     from .ideas import generate
 
     for it in generate(a.n):
         print(f"[ネタ] {it['id']}  {it['idea']['title']}  — {it['idea']['reason']}")
+
+
+def _import_ideas(a):
+    """Muse などが出したネタを取り込む"""
+    import sys
+
+    from .muse import parse_ideas
+
+    if a.file:
+        text = open(a.file, encoding="utf-8").read()
+    else:
+        print("Muse の回答を貼り付けて、最後に Enter → Ctrl+D（Windows は Ctrl+Z → Enter）を押してください:")
+        text = sys.stdin.read()
+    try:
+        ideas = parse_ideas(text)
+    except ValueError as e:
+        raise SystemExit(f"取り込めませんでした: {e}")
+    if not ideas:
+        raise SystemExit("ネタが見つかりませんでした。`python -m reelbot muse-brief` の書式で Muse に出してもらってください。")
+    for idea in ideas:
+        it = store.add(idea)
+        print(f"[ネタ取り込み] {it['id']}  {idea['title']}")
+    print(f"{len(ideas)}件取り込みました。`python -m reelbot produce -n {len(ideas)}` で制作できます。")
+
+
+def cmd_muse_brief(a):
+    from .config import DATA
+    from .muse import brief
+
+    text = brief()
+    path = DATA / "muse_brief.md"
+    path.write_text(text, encoding="utf-8")
+    print(text)
+    print(f"\n↑ この内容を Muse に貼ってください（{path} にも保存しました）")
 
 
 def _make(item):
@@ -72,10 +108,29 @@ def cmd_mark_published(a):
 
 
 def cmd_analyze(a):
+    if a.for_muse:
+        from .analyst import collect
+        from .muse import stats_table
+
+        collect()
+        print(stats_table())
+        print("\n↑ この表を Muse に貼って「この数字から次のネタに活かせる学びを3〜5行で」と頼んでください。")
+        return
     from .analyst import analyze
 
     print(analyze())
     print(f"学びを {store.LEARNINGS} に保存しました。次回の `ideas` で自動的に使われます。")
+
+
+def cmd_learnings(a):
+    import sys
+
+    print("Muse の振り返りを貼り付けて、最後に Enter → Ctrl+D（Windows は Ctrl+Z → Enter）:")
+    text = sys.stdin.read().strip()
+    if not text:
+        raise SystemExit("何も貼り付けられていないので保存しませんでした。")
+    store.LEARNINGS.write_text(f"# 分析担当（Muse）からの学び（{store.now()[:10]}更新）\n{text}\n", encoding="utf-8")
+    print(f"{store.LEARNINGS} に保存しました。")
 
 
 def cmd_status(a):
@@ -101,7 +156,12 @@ def main():
     p = argparse.ArgumentParser(prog="reelbot", description="Instagram リール自動制作（ネタ・制作・チェック・分析）")
     sp = p.add_subparsers(required=True)
 
-    s = sp.add_parser("ideas", help="ネタ担当: ネタを考える"); s.add_argument("-n", type=int, default=5); s.set_defaults(f=cmd_ideas)
+    s = sp.add_parser("ideas", help="ネタ担当: ネタを考える（--paste / --file で Muse のネタを取り込み）")
+    s.add_argument("-n", type=int, default=5)
+    s.add_argument("--paste", action="store_true", help="Muse の回答を貼り付けて取り込む")
+    s.add_argument("--file", help="Muse の回答を保存したテキストファイルから取り込む")
+    s.set_defaults(f=cmd_ideas)
+    s = sp.add_parser("muse-brief", help="Muse に渡す最新の引き継ぎ文を作る"); s.set_defaults(f=cmd_muse_brief)
     s = sp.add_parser("produce", help="制作担当+チェック担当: 動画を作って検品")
     s.add_argument("--id"); s.add_argument("-n", type=int, default=1); s.set_defaults(f=cmd_produce)
     s = sp.add_parser("run", help="ネタ出し→制作→チェックを一気に実行"); s.add_argument("-n", type=int, default=1); s.set_defaults(f=cmd_run)
@@ -111,7 +171,11 @@ def main():
     s.add_argument("id"); s.add_argument("--video-url", required=True, help="動画の公開URL"); s.set_defaults(f=cmd_publish)
     s = sp.add_parser("mark-published", help="手動投稿した動画のメディアIDを登録")
     s.add_argument("id"); s.add_argument("media_id"); s.set_defaults(f=cmd_mark_published)
-    s = sp.add_parser("analyze", help="分析担当: 数字を集めて学びをまとめる"); s.set_defaults(f=cmd_analyze)
+    s = sp.add_parser("analyze", help="分析担当: 数字を集めて学びをまとめる")
+    s.add_argument("--for-muse", action="store_true", help="Claude を使わず、Muse に貼る数字の表だけ出す")
+    s.set_defaults(f=cmd_analyze)
+    s = sp.add_parser("learnings", help="Muse がまとめた学びを保存する（Claude のネタ出しでも使われる）")
+    s.set_defaults(f=cmd_learnings)
     s = sp.add_parser("status", help="制作台帳を表示"); s.set_defaults(f=cmd_status)
     s = sp.add_parser("cost", help="コストの目安"); s.set_defaults(f=cmd_cost)
 

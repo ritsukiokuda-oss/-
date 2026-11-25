@@ -11,6 +11,8 @@
 
 投稿前の**最終承認だけは人が行います**（`approve`）。
 
+**Muse（Meta の AI 秘書アプリ）に任せる場合**は、ネタ担当と分析担当を Muse に、制作とチェックをこのプログラムに分担します。Muse に何を渡すか、どうやり取りするかは [MUSE.md](MUSE.md) を見てください。
+
 ```
 ネタ担当 ──▶ 制作担当 ──▶ チェック担当 ──(不合格: 作り直し)──┐
    ▲                          │ 合格                          │
@@ -85,6 +87,12 @@ python -m reelbot publish <ID> --video-url https://…/video.mp4   # APIで投�
 python -m reelbot mark-published <ID> <メディアID>                # アプリで手動投稿した場合
 
 python -m reelbot analyze             # 分析担当: 数字を集めてレポート作成（data/reports/）
+
+# Muse と分担する場合（詳しくは MUSE.md）
+python -m reelbot muse-brief          # Muse に貼る引き継ぎ文を作る
+python -m reelbot ideas --paste       # Muse が出したネタを取り込む
+python -m reelbot analyze --for-muse  # Muse に貼る数字の表を出す
+python -m reelbot learnings           # Muse の振り返りを保存する
 python -m reelbot cost                # 今の設定でのコストの目安
 ```
 
@@ -107,6 +115,7 @@ reelbot/
   media.py      ffmpeg（整形・テロップ・フレーム抽出）
   checker.py    チェック担当
   analyst.py    分析担当
+  muse.py       Muse との受け渡し（引き継ぎ文・ネタの取り込み・数字の表）
   instagram.py  Instagram Graph API（投稿・インサイト）
   store.py      全担当が共有する制作台帳 data/board.json
   cli.py        コマンド
