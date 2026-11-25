@@ -33,6 +33,8 @@ const CONFIG = {
 
   INBOX_FOLDER_NAME: '名刺_受信',
   DONE_FOLDER_NAME: '名刺_処理済み',
+  EIGHT_FOLDER_NAME: 'エイト取込',   // エイトから書き出したCSVを入れるフォルダ
+  EIGHT_RECENT_DAYS: 14,             // エイトのCSVで、名刺交換日がこの日数より古い名刺は通知しない
   SHEET_NAME: '訪問ログ',
   MODEL: 'claude-opus-5-5',          // 名刺の読み取りに使うClaudeのモデル
   MAX_FILES_PER_RUN: 10,
@@ -75,6 +77,7 @@ function setup() {
 
   const inbox = getOrCreateFolder_(props, 'INBOX_FOLDER_ID', CONFIG.INBOX_FOLDER_NAME);
   const done = getOrCreateFolder_(props, 'DONE_FOLDER_ID', CONFIG.DONE_FOLDER_NAME);
+  const eight = getOrCreateFolder_(props, 'EIGHT_FOLDER_ID', CONFIG.EIGHT_FOLDER_NAME);
 
   let ssId = props.getProperty('SHEET_ID');
   if (!ssId) {
@@ -100,6 +103,7 @@ function setup() {
   console.log([
     '設定が完了しました。',
     `名刺を入れるフォルダ: ${inbox.getUrl()}`,
+    `エイトのCSVを入れるフォルダ: ${eight.getUrl()}`,
     `処理済みフォルダ: ${done.getUrl()}`,
     `訪問ログ: ${SpreadsheetApp.openById(ssId).getUrl()}`,
     missing.length ? `※ スクリプトプロパティが未設定です: ${missing.join(', ')}` : '',
@@ -119,6 +123,7 @@ function runEvery10Minutes() {
   if (!lock.tryLock(1000)) return;
   try {
     processInbox_();
+    processEightCsv_();
     createDueDrafts_();
   } finally {
     lock.releaseLock();
@@ -157,38 +162,42 @@ function handleCardFile_(file) {
   const cards = extractCards_(file).filter((c) => c.company || c.name);
   if (!cards.length) throw new Error('名刺が写っていないか、文字が読めませんでした');
 
-  const takenAt = file.getDateCreated();
+  cards.forEach((card) => registerCard_(card, file.getDateCreated(), file.getUrl(), true));
+}
+
+/**
+ * 名刺1枚分を訪問ログに登録し、お礼メールの下書き（または予約）とチャット通知を行う。
+ * useTime=false のときは時刻での予定の推測をせず、会社名が一致する予定だけを紐づける。
+ */
+function registerCard_(card, takenAt, sourceUrl, useTime) {
   const now = new Date();
   const sheet = getSheet_();
+  const event = findVisitEvent_(card.company, takenAt, useTime);
+  const visitDate = event ? event.getStartTime() : takenAt;
+  const eventEnd = event ? event.getEndTime() : null;
 
-  cards.forEach((card) => {
-    const event = findVisitEvent_(card.company, takenAt);
-    const visitDate = event ? event.getStartTime() : takenAt;
-    const eventEnd = event ? event.getEndTime() : null;
+  let status;
+  if (!card.email) status = STATUS.NO_EMAIL;
+  else if (eventEnd && eventEnd > now) status = STATUS.WAITING;
+  else {
+    createThankYouDraft_(card, visitDate);
+    status = STATUS.DONE;
+  }
 
-    let status;
-    if (!card.email) status = STATUS.NO_EMAIL;
-    else if (eventEnd && eventEnd > now) status = STATUS.WAITING;
-    else {
-      createThankYouDraft_(card, visitDate);
-      status = STATUS.DONE;
-    }
+  sheet.appendRow([
+    fmt_(now, 'yyyy/MM/dd HH:mm'),
+    fmt_(visitDate, 'yyyy/MM/dd'),
+    card.company, card.department, card.title, card.name,
+    card.postal_code, card.address, card.email, card.phone, card.mobile,
+    event ? event.getTitle() : '',
+    eventEnd ? fmt_(eventEnd, 'yyyy/MM/dd HH:mm') : '',
+    status,
+    false,
+    sourceUrl,
+  ]);
+  sheet.getRange(sheet.getLastRow(), COL['ハガキ'] + 1).insertCheckboxes();
 
-    sheet.appendRow([
-      fmt_(now, 'yyyy/MM/dd HH:mm'),
-      fmt_(visitDate, 'yyyy/MM/dd'),
-      card.company, card.department, card.title, card.name,
-      card.postal_code, card.address, card.email, card.phone, card.mobile,
-      event ? event.getTitle() : '',
-      eventEnd ? fmt_(eventEnd, 'yyyy/MM/dd HH:mm') : '',
-      status,
-      false,
-      file.getUrl(),
-    ]);
-    sheet.getRange(sheet.getLastRow(), COL['ハガキ'] + 1).insertCheckboxes();
-
-    notifyChat_(buildCardMessage_(card, event, status));
-  });
+  notifyChat_(buildCardMessage_(card, event, status));
 }
 
 /** 予定が終わった「予定終了後に作成」の行（とメールを後から入力した行）について、お礼メールの下書きを作る */
@@ -430,6 +439,220 @@ function cleanCard_(c) {
   return out;
 }
 
+// ---------------------------------------------------------------- エイトのCSV取り込み
+
+const EIGHT_DONE_PREFIX = '[取込済] ';
+const EIGHT_SEEN_SHEET = 'エイト取込済み';
+
+// エイトのCSVの見出し名の候補（上にあるものほど優先）
+const EIGHT_COLUMNS = {
+  company: ['会社名', '会社', '企業名', 'company'],
+  department: ['部署名', '部署', '所属', 'department'],
+  title: ['役職', '役職名', '肩書き', '肩書', 'title'],
+  name: ['氏名', '名前', 'フルネーム', 'name'],
+  last: ['姓', '氏名(姓)', '姓(漢字)', 'lastname'],
+  first: ['名', '氏名(名)', '名(漢字)', 'firstname'],
+  postal_code: ['郵便番号', '〒', 'zip', 'postalcode'],
+  address: ['住所', '所在地', '住所1', 'address'],
+  address2: ['住所2', '建物名', 'ビル名'],
+  email: ['e-mail', 'eメール', 'email', 'メールアドレス', 'メール', 'mail'],
+  phone: ['tel会社', 'tel部門', 'tel直通', 'tel', '電話番号', '電話', '会社電話'],
+  mobile: ['携帯電話', '携帯', '携帯番号', 'mobile'],
+  date: ['名刺交換日', '交換日', '名刺交換日時', '取り込み日', '登録日'],
+};
+
+/** 「エイト取込」フォルダに入ったCSVから、新しく増えた名刺だけを取り込む */
+function processEightCsv_() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('EIGHT_FOLDER_ID');
+  if (!id) return;
+  const folder = DriveApp.getFolderById(id);
+  const done = DriveApp.getFolderById(props.getProperty('DONE_FOLDER_ID'));
+  const files = folder.getFiles();
+
+  while (files.hasNext()) {
+    const file = files.next();
+    if (file.getName().startsWith(ERROR_PREFIX) || !isTableFile_(file)) continue;
+    try {
+      importEightFile_(file);
+      file.setName(EIGHT_DONE_PREFIX + file.getName());
+      file.moveTo(done);
+    } catch (e) {
+      if (e instanceof RetryLater) continue;
+      console.error(e);
+      file.setName(ERROR_PREFIX + file.getName());
+      notifyChat_(`⚠️ エイトのCSVを取り込めませんでした\n${file.getUrl()}\n理由: ${e.message}`);
+    }
+  }
+}
+
+function isTableFile_(file) {
+  const mime = file.getMimeType();
+  return /\.csv$/i.test(file.getName()) || mime === 'text/csv' || mime === MimeType.GOOGLE_SHEETS;
+}
+
+function importEightFile_(file) {
+  const props = PropertiesService.getScriptProperties();
+  const table = readTable_(file).filter((r) => r.some((c) => String(c).trim()));
+  if (table.length < 2) throw new Error('名刺のデータが入っていません');
+  const cols = mapEightColumns_(table[0]);
+
+  const seen = getSeenKeys_();
+  const firstTime = !props.getProperty('EIGHT_INITIALIZED');
+  const today = fmt_(new Date(), 'yyyy/MM/dd');
+  const limit = new Date(Date.now() - CONFIG.EIGHT_RECENT_DAYS * 24 * 3600 * 1000);
+  const log = getSheet_();
+  const logRows = log.getDataRange().getValues();
+  const newKeys = [];
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  table.slice(1).forEach((row) => {
+    const card = eightRowToCard_(row, cols);
+    if (!card.company && !card.name) return;
+    const key = cardKey_(card);
+    if (seen.set.has(key)) return;
+    seen.set.add(key);
+    newKeys.push([key, fmt_(new Date(), 'yyyy/MM/dd HH:mm')]);
+
+    const exchanged = cols.date.length ? parseLooseDate_(pickValue_(row, cols.date)) : null;
+    // 初回は過去の名刺を大量に通知しないよう、今日交換した名刺だけを対象にする
+    const isNew = firstTime
+      ? !!exchanged && fmt_(exchanged, 'yyyy/MM/dd') === today
+      : !exchanged || exchanged >= limit;
+    if (!isNew) { skipped++; return; }
+
+    // 写真でも登録済みの名刺なら、エイトの正確なデータで訪問ログを上書きする
+    const idx = findLogRow_(logRows, card, limit);
+    if (idx > 0) {
+      if (updateLogRow_(log, idx, logRows[idx], card)) updated++;
+      return;
+    }
+    registerCard_(card, exchanged || new Date(), file.getUrl(), false);
+    added++;
+  });
+
+  if (newKeys.length) seen.sheet.getRange(seen.sheet.getLastRow() + 1, 1, newKeys.length, 2).setValues(newKeys);
+  props.setProperty('EIGHT_INITIALIZED', '1');
+
+  if (firstTime && skipped) {
+    notifyChat_(`📥 エイトの名刺 ${skipped}件を「取り込み済み」として登録しました。\n次回からは、新しく増えた名刺だけを通知します。`);
+  }
+  if (updated) notifyChat_(`🔄 写真で登録済みの名刺 ${updated}件を、エイトのデータで更新しました。`);
+  if (!firstTime && !added && !updated) notifyChat_('📥 エイトのCSVを確認しました。新しい名刺はありませんでした。');
+}
+
+function readTable_(file) {
+  if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
+    return SpreadsheetApp.openById(file.getId()).getSheets()[0].getDataRange().getDisplayValues();
+  }
+  const blob = file.getBlob();
+  let text = blob.getDataAsString('UTF-8');
+  if (text.includes('�')) text = blob.getDataAsString('Shift_JIS'); // 文字化けしたらShift_JISで読み直す
+  return Utilities.parseCsv(text.replace(/^﻿/, ''));
+}
+
+function normHeader_(h) {
+  return String(h).normalize('NFKC').toLowerCase().replace(/[\s()「」・_]/g, '');
+}
+
+/** 見出し行から、項目ごとに該当する列の番号（候補順）を求める */
+function mapEightColumns_(header) {
+  const norm = header.map(normHeader_);
+  const cols = {};
+  Object.entries(EIGHT_COLUMNS).forEach(([field, names]) => {
+    cols[field] = [];
+    names.map(normHeader_).forEach((n) => {
+      norm.forEach((h, i) => { if (h === n && !cols[field].includes(i)) cols[field].push(i); });
+    });
+  });
+  const hasName = cols.name.length || cols.last.length;
+  if (!cols.company.length && !hasName) {
+    throw new Error(`CSVの見出しが想定と違います（見出し: ${header.slice(0, 15).join(', ')}）`);
+  }
+  return cols;
+}
+
+function pickValue_(row, idxs) {
+  for (const i of idxs) {
+    const v = String(row[i] == null ? '' : row[i]).trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+function eightRowToCard_(row, cols) {
+  const name = pickValue_(row, cols.name) ||
+    [pickValue_(row, cols.last), pickValue_(row, cols.first)].filter(Boolean).join(' ');
+  const address = [pickValue_(row, cols.address), pickValue_(row, cols.address2)].filter(Boolean).join(' ');
+  const zip = pickValue_(row, cols.postal_code).normalize('NFKC').replace(/[〒\s-]/g, '');
+  return cleanCard_({
+    company: pickValue_(row, cols.company),
+    department: pickValue_(row, cols.department),
+    title: pickValue_(row, cols.title),
+    name,
+    postal_code: /^\d{7}$/.test(zip) ? `${zip.slice(0, 3)}-${zip.slice(3)}` : zip,
+    address,
+    email: pickValue_(row, cols.email),
+    phone: pickValue_(row, cols.phone),
+    mobile: pickValue_(row, cols.mobile),
+  });
+}
+
+function cardKey_(c) {
+  if (c.email) return c.email.toLowerCase();
+  return normalizeCompany_(c.company) + '|' + c.name.replace(/\s|　/g, '');
+}
+
+function parseLooseDate_(v) {
+  if (v instanceof Date) return v;
+  const m = String(v || '').normalize('NFKC').match(/(\d{4})\D(\d{1,2})\D(\d{1,2})/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+/** 訪問ログ（直近）から同じ人の行を探す。メールアドレスか「会社名＋氏名」で照合 */
+function findLogRow_(rows, card, since) {
+  const email = card.email.toLowerCase();
+  const nameKey = normalizeCompany_(card.company) + '|' + card.name.replace(/\s|　/g, '');
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const r = rows[i];
+    const d = toDate_(r[COL['訪問日']]);
+    if (d && d < since) continue;
+    const rEmail = String(r[COL['メール']]).toLowerCase();
+    const rKey = normalizeCompany_(r[COL['会社名']]) + '|' + String(r[COL['氏名']]).replace(/\s|　/g, '');
+    if ((email && rEmail === email) || rKey === nameKey) return i;
+  }
+  return -1;
+}
+
+function updateLogRow_(sheet, idx, row, card) {
+  const map = { company: '会社名', department: '部署', title: '役職', name: '氏名', postal_code: '郵便番号',
+    address: '住所', email: 'メール', phone: '電話', mobile: '携帯' };
+  let changed = false;
+  Object.entries(map).forEach(([f, h]) => {
+    if (card[f] && String(row[COL[h]]) !== card[f]) {
+      sheet.getRange(idx + 1, COL[h] + 1).setValue(card[f]);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function getSeenKeys_() {
+  const ss = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SHEET_ID'));
+  let sh = ss.getSheetByName(EIGHT_SEEN_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(EIGHT_SEEN_SHEET);
+    sh.appendRow(['キー', '取込日時']);
+    sh.getRange('A:B').setNumberFormat('@');
+    sh.hideSheet();
+  }
+  const n = sh.getLastRow() - 1;
+  const keys = n > 0 ? sh.getRange(2, 1, n, 1).getValues().map((r) => String(r[0])) : [];
+  return { sheet: sh, set: new Set(keys) };
+}
+
 // ---------------------------------------------------------------- カレンダー
 
 function getVisitEvents_(day) {
@@ -439,7 +662,7 @@ function getVisitEvents_(day) {
 }
 
 /** 会社名が予定に入っている訪問予定を探す。なければ撮影時刻に近い訪問予定 */
-function findVisitEvent_(company, at) {
+function findVisitEvent_(company, at, useTime = true) {
   const events = getVisitEvents_(at);
   if (!events.length) return null;
 
@@ -449,6 +672,7 @@ function findVisitEvent_(company, at) {
       normalizeCompany_([e.getTitle(), e.getLocation(), e.getDescription()].join(' ')).includes(key));
     if (hit) return hit;
   }
+  if (!useTime) return null;
 
   const margin = 90 * 60 * 1000;
   const t = at.getTime();
