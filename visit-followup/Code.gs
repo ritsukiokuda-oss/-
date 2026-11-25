@@ -96,7 +96,7 @@ function setup() {
   ScriptApp.newTrigger('runEvery10Minutes').timeBased().everyMinutes(10).create();
   ScriptApp.newTrigger('sendDailySummary').timeBased().atHour(CONFIG.SUMMARY_HOUR).everyDays(1).create();
 
-  const missing = ['CHAT_WEBHOOK_URL', 'ANTHROPIC_API_KEY'].filter((k) => !props.getProperty(k));
+  const missing = ['CHAT_WEBHOOK_URL'].filter((k) => !props.getProperty(k));
   console.log([
     '設定が完了しました。',
     `名刺を入れるフォルダ: ${inbox.getUrl()}`,
@@ -191,7 +191,7 @@ function handleCardFile_(file) {
   });
 }
 
-/** 予定が終わった「予定終了後に作成」の行について、お礼メールの下書きを作る */
+/** 予定が終わった「予定終了後に作成」の行（とメールを後から入力した行）について、お礼メールの下書きを作る */
 function createDueDrafts_() {
   const sheet = getSheet_();
   const rows = sheet.getDataRange().getValues();
@@ -199,7 +199,10 @@ function createDueDrafts_() {
 
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
-    if (r[COL['お礼メール']] !== STATUS.WAITING) continue;
+    const st = r[COL['お礼メール']];
+    // 「メールなし」でも、あとから訪問ログにメールアドレスを手入力すれば下書きを作る
+    const filledLater = st === STATUS.NO_EMAIL && String(r[COL['メール']]).includes('@');
+    if (st !== STATUS.WAITING && !filledLater) continue;
     const end = toDate_(r[COL['予定終了']]);
     if (end && end > now) continue;
 
@@ -316,16 +319,16 @@ function extractWithClaude_(file, apiKey) {
   return JSON.parse(text).cards.map(cleanCard_);
 }
 
-/** Claude に送れる形に変換。大きい写真やHEICはドライブのサムネイル（JPEG）を使う */
-function toClaudeMedia_(file) {
+/**
+ * 読み取りに使うファイルを用意する。
+ * そのまま使える形式・サイズならそのまま、大きい写真やHEIC（iPhoneの写真）は
+ * ドライブが作るサムネイル（JPEG）に置き換える。
+ */
+function getReadableBlob_(file, maxBytes) {
   const mime = file.getMimeType();
   const size = file.getSize();
-  if (mime === MimeType.PDF && size < 20 * 1024 * 1024) {
-    return { type: 'document', source: { type: 'base64', media_type: mime, data: Utilities.base64Encode(file.getBlob().getBytes()) } };
-  }
-  if (['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mime) && size < 3.5 * 1024 * 1024) {
-    return { type: 'image', source: { type: 'base64', media_type: mime, data: Utilities.base64Encode(file.getBlob().getBytes()) } };
-  }
+  if (mime === MimeType.PDF) return file.getBlob();
+  if (['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mime) && size < maxBytes) return file.getBlob();
   const meta = Drive.Files.get(file.getId(), { fields: 'thumbnailLink' });
   if (!meta.thumbnailLink) throw new RetryLater('サムネイルがまだ作られていません');
   const thumb = UrlFetchApp.fetch(meta.thumbnailLink.replace(/=s\d+$/, '=s2000'), {
@@ -333,14 +336,21 @@ function toClaudeMedia_(file) {
     muteHttpExceptions: true,
   });
   if (thumb.getResponseCode() !== 200) throw new RetryLater(`サムネイル取得失敗 ${thumb.getResponseCode()}`);
-  return { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: Utilities.base64Encode(thumb.getContent()) } };
+  return thumb.getBlob().setContentType('image/jpeg').setName('card.jpg');
 }
 
-/** APIキーがないとき用：ドライブの文字認識（OCR）＋簡易ルールで読み取る（精度は低め） */
+/** Claude に送れる形に変換 */
+function toClaudeMedia_(file) {
+  const blob = getReadableBlob_(file, 3.5 * 1024 * 1024);
+  const type = blob.getContentType() === MimeType.PDF ? 'document' : 'image';
+  return { type, source: { type: 'base64', media_type: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) } };
+}
+
+/** APIキーなしの場合：ドライブの文字認識（OCR）＋ルールで読み取る */
 function extractWithDriveOcr_(file) {
   const doc = Drive.Files.create(
     { name: 'tmp_ocr_' + file.getName(), mimeType: MimeType.GOOGLE_DOCS },
-    file.getBlob(),
+    getReadableBlob_(file, 1.8 * 1024 * 1024), // ドライブの文字認識は2MBまで
     { ocrLanguage: 'ja', fields: 'id' }
   );
   try {
@@ -352,13 +362,15 @@ function extractWithDriveOcr_(file) {
 
 function parseCardText_(raw) {
   const text = raw.normalize('NFKC');
-  const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  const pick = (re) => lines.find((l) => re.test(l)) || '';
+  const lines = text.split(/\r?\n/).map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
 
-  const COMPANY_RE = /(株式会社|有限会社|合同会社|一般社団法人|一般財団法人|\(株\)|\(有\)|Co\.,|Inc\.|Ltd\.?|Corporation)/i;
-  const TITLE_RE = /(代表取締役|取締役|社長|会長|執行役員|本部長|部長|次長|課長|係長|主任|マネージャー|リーダー|チーフ)/;
-  const DEPT_RE = /(本部|事業部|部|課|室|グループ|チーム|支店|営業所|センター)/;
-  const PREF_RE = /(北海道|東京都|京都府|大阪府|[^\s]{2,3}県)/;
+  const COMPANY_RE = /(株式会社|有限会社|合同会社|合資会社|一般社団法人|一般財団法人|社会福祉法人|医療法人|\(株\)|\(有\)|Co\.,|Inc\.|Ltd\.?|Corporation)/i;
+  const TITLE_RE = /(代表取締役社長|代表取締役|専務取締役|常務取締役|取締役|代表|社長|会長|副社長|執行役員|本部長|事業部長|部長代理|部長|次長|室長|課長代理|課長|支店長|所長|店長|係長|主任|主査|マネージャー|マネジャー|リーダー|チーフ)/;
+  const TITLE_G = new RegExp(TITLE_RE.source, 'g');
+  const DEPT_TOKEN_RE = /(本部|事業部|部|課|室|グループ|チーム|支店|支社|営業所|事業所|センター|局|係)$/;
+  const ADDR_RE = /(北海道|東京都|京都府|大阪府|.{2,3}県|\S{1,5}[市区郡]\S*?(町|村|丁目|番地|\d))/;
+  const NOT_TEXT_RE = /@|https?:|www\.|TEL|FAX|Tel|Fax|電話|携帯|Mobile|E-?mail/i;
+  const POSTAL_RE = /〒?\s*\d{3}-\d{4}/;
 
   const email = (text.match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/) || [''])[0];
   const postalM = text.match(/〒\s*(\d{3})-?(\d{4})/) || text.match(/(?:^|\s)(\d{3})-(\d{4})(?:\s|$)/m);
@@ -366,29 +378,47 @@ function parseCardText_(raw) {
   const phoneM = text.match(/(?:TEL|Tel|tel|電話|T)[\s.:：]*(0\d{1,4}-\d{1,4}-\d{3,4})/) ||
     text.match(/(0[1-6]\d{0,3}-\d{1,4}-\d{3,4})/);
 
-  const company = pick(COMPANY_RE);
+  // 会社名
+  const company = lines.find((l) => COMPANY_RE.test(l) && !NOT_TEXT_RE.test(l)) || '';
+
+  // 住所（「大阪市〜」のように都道府県がない住所にも対応。次の行のビル名もつなげる）
   let address = '';
-  const ai = lines.findIndex((l) => PREF_RE.test(l) && !/@/.test(l));
+  const ai = lines.findIndex((l) => l !== company && !NOT_TEXT_RE.test(l) &&
+    ADDR_RE.test(l.replace(POSTAL_RE, '').replace(/^住所[:：]?/, '')));
   if (ai >= 0) {
-    address = lines[ai].replace(/〒?\s*\d{3}-?\d{4}/, '').replace(/^住所[:：]?/, '').trim();
+    address = lines[ai].replace(POSTAL_RE, '').replace(/^住所[:：]?/, '').trim();
     const next = lines[ai + 1] || '';
-    if (/(ビル|タワー|\d+F|\d+階|号室)/.test(next) && !/@|TEL|FAX/i.test(next)) address += ' ' + next;
+    if (/(ビル|タワー|ハイツ|マンション|\d+F|\d+階|号室|号館)/.test(next) && !NOT_TEXT_RE.test(next)) address += ' ' + next;
   }
 
-  const titleLine = lines.find((l) => TITLE_RE.test(l) && l !== company) || '';
-  const title = (titleLine.match(TITLE_RE) || [''])[0];
-  const department = lines.find((l) => DEPT_RE.test(l) && l !== company && !PREF_RE.test(l) && !/@|\d{2,}/.test(l)) || '';
-
-  const JP = '[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}]';
-  const NAME_RE = new RegExp(`^${JP}{1,4}\\s?${JP}{1,4}$`, 'u');
-  const nameCands = lines.filter((l) => NAME_RE.test(l) && l !== company && l !== department &&
-    !TITLE_RE.test(l) && !DEPT_RE.test(l) && !PREF_RE.test(l));
-  const name = nameCands.find((l) => /\s/.test(l)) || nameCands[0] || '';
+  // 部署・役職・氏名（「営業部 部長 田中一郎」のように1行にまとまっていても分ける）
+  const JP = '[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}ー々]';
+  const NAME_RE = new RegExp(`^${JP}{1,5}( ${JP}{1,5})?$`, 'u');
+  const isDept = (t) => t.length >= 3 && DEPT_TOKEN_RE.test(t);
+  let title = '';
+  const depts = [];
+  const nameCands = [];
+  lines.forEach((l, idx) => {
+    if (l === company || idx === ai || NOT_TEXT_RE.test(l) || /\d{2,}/.test(l)) return;
+    const t = l.match(TITLE_RE);
+    if (t && !title) title = t[0];
+    const tokens = l.replace(TITLE_G, ' ').trim().split(' ').filter(Boolean);
+    tokens.filter(isDept).forEach((d) => depts.push(d));
+    const rest = tokens.filter((x) => !isDept(x)).join(' ');
+    if (rest && NAME_RE.test(rest) && rest.replace(' ', '').length >= 2) {
+      nameCands.push({ name: rest, score: (t ? 2 : 0) + (rest.includes(' ') ? 1 : 0) });
+    }
+  });
+  nameCands.sort((a, b) => b.score - a.score);
 
   return cleanCard_({
-    company, department: department.replace(TITLE_RE, '').trim(), title, name,
+    company,
+    department: depts.join(' '),
+    title,
+    name: nameCands.length ? nameCands[0].name : '',
     postal_code: postalM ? `${postalM[1]}-${postalM[2]}` : '',
-    address, email,
+    address,
+    email,
     phone: phoneM ? phoneM[1] : '',
     mobile: mobileM ? mobileM[0] : '',
   });
