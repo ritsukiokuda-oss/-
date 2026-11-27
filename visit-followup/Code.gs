@@ -1,7 +1,7 @@
 /**
  * 訪問フォロー自動化（Google Apps Script）
  *
- * 1. Googleドライブの「名刺_受信」フォルダに名刺の写真（またはPDF）を入れる
+ * 1. Googleドライブの「名刺フォルダ」フォルダに名刺の写真（またはPDF）を入れる
  * 2. 10分ごとに自動で読み取り → スプレッドシート「訪問ログ」に記録 → Googleチャットに通知
  * 3. Googleカレンダーの訪問予定が終わったら、お礼メールを Gmail の下書きに作成
  * 4. 毎日夕方、その日のハガキ宛先一覧を Googleチャットにまとめて通知
@@ -31,9 +31,10 @@ const CONFIG = {
   // 予定名にこの言葉が入っているか、場所が入っている予定を「訪問」とみなします
   VISIT_KEYWORDS: ['訪問', '商談', '打合せ', '打ち合わせ', '面談', '挨拶', 'MTG', 'ミーティング'],
 
-  INBOX_FOLDER_NAME: '名刺_受信',
+  // 名刺の写真もエイトのCSVも、このフォルダに入れればOK
+  INBOX_FOLDER_NAME: '名刺フォルダ',
   DONE_FOLDER_NAME: '名刺_処理済み',
-  EIGHT_FOLDER_NAME: 'エイト取込',   // エイトから書き出したCSVを入れるフォルダ
+  EIGHT_FOLDER_NAME: '名刺フォルダ', // エイトから書き出したCSVを入れるフォルダ
   EIGHT_RECENT_DAYS: 14,             // エイトのCSVで、名刺交換日がこの日数より古い名刺は通知しない
   SHEET_NAME: '訪問ログ',
   MODEL: 'claude-opus-5-5',          // 名刺の読み取りに使うClaudeのモデル
@@ -102,7 +103,7 @@ function setup() {
   const missing = ['CHAT_WEBHOOK_URL'].filter((k) => !props.getProperty(k));
   console.log([
     '設定が完了しました。',
-    `名刺を入れるフォルダ: ${inbox.getUrl()}`,
+    `名刺の写真を入れるフォルダ: ${inbox.getUrl()}`,
     `エイトのCSVを入れるフォルダ: ${eight.getUrl()}`,
     `処理済みフォルダ: ${done.getUrl()}`,
     `訪問ログ: ${SpreadsheetApp.openById(ssId).getUrl()}`,
@@ -248,7 +249,7 @@ function sendDailySummary() {
   if (unregistered.length) {
     lines.push('', `⚠️ *名刺が未登録の訪問（${unregistered.length}件）*`);
     unregistered.forEach((e) => lines.push(`・${fmt_(e.getStartTime(), 'HH:mm')} ${e.getTitle()}`));
-    lines.push('名刺の写真を「名刺_受信」フォルダに入れてください。');
+    lines.push('名刺の写真を「名刺フォルダ」フォルダに入れてください。');
   }
 
   const ssUrl = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SHEET_ID')).getUrl();
@@ -461,7 +462,7 @@ const EIGHT_COLUMNS = {
   date: ['名刺交換日', '交換日', '名刺交換日時', '取り込み日', '登録日'],
 };
 
-/** 「エイト取込」フォルダに入ったCSVから、新しく増えた名刺だけを取り込む */
+/** 「名刺フォルダ」に入ったCSVから、新しく増えた名刺だけを取り込む */
 function processEightCsv_() {
   const props = PropertiesService.getScriptProperties();
   const id = props.getProperty('EIGHT_FOLDER_ID');
@@ -549,7 +550,10 @@ function readTable_(file) {
   }
   const blob = file.getBlob();
   let text = blob.getDataAsString('UTF-8');
-  if (text.includes('�')) text = blob.getDataAsString('Shift_JIS'); // 文字化けしたらShift_JISで読み直す
+  if (text.includes('\uFFFD')) {
+    // 文字化けしたら読み直す（エイトのCSVはShift_JIS。髙・﨑などの機種依存文字も読めるよう MS932 を優先）
+    try { text = blob.getDataAsString('MS932'); } catch (e) { text = blob.getDataAsString('Shift_JIS'); }
+  }
   return Utilities.parseCsv(text.replace(/^﻿/, ''));
 }
 
